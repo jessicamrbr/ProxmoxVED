@@ -14,15 +14,71 @@ update_os
 
 setup_hwaccel
 
-msg_info "Installing Dependencies"
+msg_info "Installing Base Dependencies"
 $STD apt install -y \
   build-essential \
   cmake \
   protobuf-compiler-grpc \
   make \
   gcc \
-  g++
-msg_ok "Installed Dependencies"
+  g++ \
+  software-properties-common \
+  pciutils \
+  gpg-agent \
+  wget \
+  curl \
+  ca-certificates \
+  libopenblas-dev \
+  libclblast-dev
+msg_ok "Installed Base Dependencies"
+
+msg_info "Setting up Vulkan & Intel Repositories"
+# Setup Intel repos
+mkdir -p /usr/share/keyrings
+curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg 2>/dev/null || true
+cat <<EOF >/etc/apt/sources.list.d/intel-gpu.sources
+Types: deb
+URIs: https://repositories.intel.com/gpu/ubuntu
+Suites: jammy
+Components: client
+Architectures: amd64 i386
+Signed-By: /usr/share/keyrings/intel-graphics.gpg
+EOF
+$STD apt update
+msg_ok "Set up Intel Repositories"
+
+msg_info "Installing GPU SDKs (Intel, Vulkan)"
+# Intel
+if is_debian && [[ "$(get_os_version_major)" -ge 13 ]]; then
+  $STD apt -y install libze1 libze-dev intel-level-zero-gpu 2>/dev/null || true
+else
+  $STD apt -y install intel-level-zero-gpu level-zero level-zero-dev 2>/dev/null || true
+fi
+$STD apt install -y --no-install-recommends intel-basekit-2024.1 2>/dev/null || true
+
+# Vulkan
+$STD apt install -y mesa-vulkan-drivers vulkan-tools libvulkan-dev
+msg_ok "Installed GPU SDKs"
+
+msg_info "Setting up NVIDIA CUDA Repository"
+curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
+$STD dpkg -i cuda-keyring_1.1-1_all.deb
+rm -f cuda-keyring_1.1-1_all.deb
+$STD apt update
+msg_ok "Set up NVIDIA CUDA Repository"
+
+msg_info "Installing NVIDIA CUDA Toolkit"
+$STD apt install -y --no-install-recommends cuda-nvcc-12-0 libcublas-dev-12-0 libcusparse-dev-12-0
+msg_ok "Installed NVIDIA CUDA Toolkit"
+
+msg_info "Setting up AMD ROCm & HipBLAS"
+wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
+cat <<EOF >/etc/apt/sources.list.d/rocm.list
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/debian jammy main
+EOF
+$STD apt update
+$STD apt install -y --no-install-recommends hipblas-dev hipblaslt-dev rocblas-dev || true
+msg_ok "Set up AMD ROCm & HipBLAS"
 
 GO_VERSION="1.22" setup_go
 
