@@ -12,6 +12,8 @@ setting_up_container
 network_check
 update_os
 
+setup_hwaccel
+
 msg_info "Installing Dependencies"
 $STD apt install -y \
   build-essential \
