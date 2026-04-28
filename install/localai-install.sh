@@ -94,6 +94,40 @@ cd /opt/localai
 $STD make build
 msg_ok "Built Application"
 
+read -r -p "Enable DEBUG mode? <y/N> " prompt_debug
+if [[ ${prompt_debug,,} =~ ^(y|yes)$ ]]; then
+  LOCALAI_DEBUG="true"
+else
+  LOCALAI_DEBUG="false"
+fi
+
+read -r -p "Enable LocalAGI (Agents) features? <y/N> " prompt_agi
+if [[ ${prompt_agi,,} =~ ^(y|yes)$ ]]; then
+  LOCALAI_DISABLE_AGENTS="false"
+  LOCALAI_AGENT_POOL_ENABLE_SKILLS="true"
+else
+  LOCALAI_DISABLE_AGENTS="true"
+  LOCALAI_AGENT_POOL_ENABLE_SKILLS="false"
+fi
+
+msg_info "Generating Environment Variables"
+cat <<EOF >/opt/localai/.env
+# LocalAI Environment Configuration
+DEBUG=${LOCALAI_DEBUG}
+
+# Agents (LocalAGI) - https://localai.io/features/agents/
+LOCALAI_DISABLE_AGENTS=${LOCALAI_DISABLE_AGENTS}
+LOCALAI_AGENT_POOL_DEFAULT_MODEL=hermes-3-llama3.1-8b
+LOCALAI_AGENT_POOL_ENABLE_SKILLS=${LOCALAI_AGENT_POOL_ENABLE_SKILLS}
+LOCALAI_AGENT_POOL_ENABLE_LOGS=true
+LOCALAI_AGENT_HUB_URL=https://agenthub.localai.io
+
+# Uncomment to use PostgreSQL for the knowledge base (requires the postgres service)
+# LOCALAI_AGENT_POOL_VECTOR_ENGINE=postgres
+# LOCALAI_AGENT_POOL_DATABASE_URL=postgresql://localrecall:localrecall@postgres:5432/localrecall?sslmode=disable
+EOF
+msg_ok "Generated Environment Variables"
+
 msg_info "Creating Service"
 cat <<EOF >/etc/systemd/system/localai.service
 [Unit]
@@ -104,6 +138,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/localai
+EnvironmentFile=-/opt/localai/.env
 ExecStart=/opt/localai/local-ai --models-path=/opt/localai/models/ --host=0.0.0.0 --port=8080
 Restart=on-failure
 RestartSec=5
