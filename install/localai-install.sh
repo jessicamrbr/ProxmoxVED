@@ -68,7 +68,7 @@ $STD apt update
 msg_ok "Set up NVIDIA CUDA Repository"
 
 msg_info "Installing NVIDIA CUDA Toolkit"
-$STD apt install -y --no-install-recommends cuda-nvcc-12-0 libcublas-dev-12-0 libcusparse-dev-12-0
+$STD apt install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 libcusparse-dev-12-8
 msg_ok "Installed NVIDIA CUDA Toolkit"
 
 msg_info "Setting up AMD ROCm & HipBLAS"
@@ -80,9 +80,12 @@ $STD apt update
 $STD apt install -y --no-install-recommends hipblas-dev hipblaslt-dev rocblas-dev || true
 msg_ok "Set up AMD ROCm & HipBLAS"
 
-GO_VERSION="1.22" setup_go
+GO_VERSION="1.22.12" setup_go
+
+NODE_VERSION="22" setup_nodejs
 
 msg_info "Setting up Protobuf for Go"
+export PATH=$PATH:/root/go/bin
 $STD go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
 $STD go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@1958fcbe2ca8bd93af633f11e97d44e567e945af
 msg_ok "Set up Protobuf for Go"
@@ -105,6 +108,11 @@ read -r -p "Enable LocalAGI (Agents) features? <y/N> " prompt_agi
 if [[ ${prompt_agi,,} =~ ^(y|yes)$ ]]; then
   LOCALAI_DISABLE_AGENTS="false"
   LOCALAI_AGENT_POOL_ENABLE_SKILLS="true"
+  read -r -p "Enter PostgreSQL Database URL for LocalAGI (Press enter to skip): " prompt_db_url
+  if [[ -n "$prompt_db_url" ]]; then
+    LOCALAI_AGENT_POOL_VECTOR_ENGINE="postgres"
+    LOCALAI_AGENT_POOL_DATABASE_URL="$prompt_db_url"
+  fi
 else
   LOCALAI_DISABLE_AGENTS="true"
   LOCALAI_AGENT_POOL_ENABLE_SKILLS="false"
@@ -121,11 +129,19 @@ LOCALAI_AGENT_POOL_DEFAULT_MODEL=hermes-3-llama3.1-8b
 LOCALAI_AGENT_POOL_ENABLE_SKILLS=${LOCALAI_AGENT_POOL_ENABLE_SKILLS}
 LOCALAI_AGENT_POOL_ENABLE_LOGS=true
 LOCALAI_AGENT_HUB_URL=https://agenthub.localai.io
-
-# Uncomment to use PostgreSQL for the knowledge base (requires the postgres service)
-# LOCALAI_AGENT_POOL_VECTOR_ENGINE=postgres
-# LOCALAI_AGENT_POOL_DATABASE_URL=postgresql://localrecall:localrecall@postgres:5432/localrecall?sslmode=disable
+LOCALAI_FORCE_META_BACKEND_CAPABILITY=true
+LLAMA_VULKAN=1
 EOF
+
+if [[ -n "${LOCALAI_AGENT_POOL_VECTOR_ENGINE}" ]]; then
+cat <<EOF >>/opt/localai/.env
+
+# Database settings
+LOCALAI_AGENT_POOL_VECTOR_ENGINE=${LOCALAI_AGENT_POOL_VECTOR_ENGINE}
+LOCALAI_AGENT_POOL_DATABASE_URL=${LOCALAI_AGENT_POOL_DATABASE_URL}
+EOF
+fi
+
 msg_ok "Generated Environment Variables"
 
 msg_info "Creating Service"
@@ -139,13 +155,19 @@ Type=simple
 User=root
 WorkingDirectory=/opt/localai
 EnvironmentFile=-/opt/localai/.env
-ExecStart=/opt/localai/local-ai --models-path=/opt/localai/models/ --host=0.0.0.0 --port=8080
+ExecStart=/opt/localai/local-ai run --models-path=/opt/localai/models/ --address=0.0.0.0:8080
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Workaround: intel_gpu_top hangs LocalAI startup hook on Proxmox LXC containers
+if [ -f "/usr/bin/intel_gpu_top" ]; then
+  mv /usr/bin/intel_gpu_top /usr/bin/intel_gpu_top.bak
+fi
+
 systemctl enable -q --now localai
 msg_ok "Created Service"
 
