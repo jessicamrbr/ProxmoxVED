@@ -12,8 +12,6 @@ setting_up_container
 network_check
 update_os
 
-setup_hwaccel
-
 msg_info "Installing Base Dependencies"
 $STD apt install -y \
   build-essential \
@@ -29,11 +27,12 @@ $STD apt install -y \
   curl \
   ca-certificates \
   libopenblas-dev \
-  libclblast-dev
+  libclblast-dev \
+  pkg-config \
+  zstd
 msg_ok "Installed Base Dependencies"
 
-msg_info "Setting up Vulkan & Intel Repositories"
-# Setup Intel repos
+msg_info "Setting up Intel Repositories"
 mkdir -p /usr/share/keyrings
 curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg 2>/dev/null || true
 cat <<EOF >/etc/apt/sources.list.d/intel-gpu.sources
@@ -44,41 +43,62 @@ Components: client
 Architectures: amd64 i386
 Signed-By: /usr/share/keyrings/intel-graphics.gpg
 EOF
+curl -fsSL https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor -o /usr/share/keyrings/oneapi-archive-keyring.gpg 2>/dev/null || true
+cat <<EOF >/etc/apt/sources.list.d/oneAPI.sources
+Types: deb
+URIs: https://apt.repos.intel.com/oneapi
+Suites: all
+Components: main
+Signed-By: /usr/share/keyrings/oneapi-archive-keyring.gpg
+EOF
 $STD apt update
-msg_ok "Set up Intel Repositories"
+msg_ok "Setting up Intel Repositories"
 
-msg_info "Installing GPU SDKs (Intel, Vulkan)"
-# Intel
+msg_info "Installing Intel GPU SDK"
+# Debian 13+ has newer Level Zero packages in system repos that conflict with Intel repo packages
 if is_debian && [[ "$(get_os_version_major)" -ge 13 ]]; then
-  $STD apt -y install libze1 libze-dev intel-level-zero-gpu 2>/dev/null || true
+  # Use system packages on Debian 13+ (avoid conflicts with libze1)
+  $STD apt -y install libze1 libze-dev intel-level-zero-gpu 2>/dev/null || {
+    msg_warn "Failed to install some Level Zero packages, continuing anyway"
+  }
 else
-  $STD apt -y install intel-level-zero-gpu level-zero level-zero-dev 2>/dev/null || true
+  # Use Intel repository packages for older systems
+  $STD apt -y install intel-level-zero-gpu level-zero level-zero-dev 2>/dev/null || {
+    msg_warn "Failed to install Intel Level Zero packages, continuing anyway"
+  }
 fi
-$STD apt install -y --no-install-recommends intel-basekit-2024.1 2>/dev/null || true
+msg_ok "Installed Intel GPU SDK"
 
-# Vulkan
-$STD apt install -y mesa-vulkan-drivers vulkan-tools libvulkan-dev
-msg_ok "Installed GPU SDKs"
+msg_info "Installing Intel Toolkit (oneAPI)"
+$STD apt install -y --no-install-recommends intel-basekit-2024.1
+msg_ok "Installed Intel Toolkit (oneAPI)"
 
-msg_info "Setting up NVIDIA CUDA Repository"
+msg_info "Setting up NVIDIA Repository (CUDA)"
 curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
 $STD dpkg -i cuda-keyring_1.1-1_all.deb
 rm -f cuda-keyring_1.1-1_all.deb
 $STD apt update
-msg_ok "Set up NVIDIA CUDA Repository"
+msg_ok "Setting up NVIDIA Repository (CUDA)"
 
-msg_info "Installing NVIDIA CUDA Toolkit"
+msg_info "Installing Vulkan GPU SDK"
+$STD apt install -y mesa-vulkan-drivers vulkan-tools libvulkan-dev
+msg_ok "Installed Vulkan GPU SDK"
+
+msg_info "Installing NVIDIA Toolkit (CUDA)"
 $STD apt install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 libcusparse-dev-12-8
-msg_ok "Installed NVIDIA CUDA Toolkit"
+msg_ok "Installed NVIDIA Toolkit (CUDA)"
 
-msg_info "Setting up AMD ROCm & HipBLAS"
+msg_info "Setting up AMD Repositories"
 wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
 cat <<EOF >/etc/apt/sources.list.d/rocm.list
 deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/debian jammy main
 EOF
 $STD apt update
+msg_ok "Setting up AMD Repositories"
+
+msg_info "Setting up AMD GPU SDK & Toolkits (ROCm & HipBLAS)"
 $STD apt install -y --no-install-recommends hipblas-dev hipblaslt-dev rocblas-dev || true
-msg_ok "Set up AMD ROCm & HipBLAS"
+msg_ok "Setting up AMD GPU SDK & Toolkits (ROCm & HipBLAS)"
 
 GO_VERSION="1.22.12" setup_go
 
@@ -97,19 +117,14 @@ cd /opt/localai
 $STD make build
 msg_ok "Built Application"
 
-read -r -p "Enable DEBUG mode? <y/N> " prompt_debug
-if [[ ${prompt_debug,,} =~ ^(y|yes)$ ]]; then
-  LOCALAI_DEBUG="true"
-else
-  LOCALAI_DEBUG="false"
-fi
+setup_hwaccel
 
 read -r -p "Enable LocalAGI (Agents) features? <y/N> " prompt_agi
 if [[ ${prompt_agi,,} =~ ^(y|yes)$ ]]; then
   LOCALAI_DISABLE_AGENTS="false"
   LOCALAI_AGENT_POOL_ENABLE_SKILLS="true"
   read -r -p "Enter PostgreSQL Database URL for LocalAGI (Press enter to skip): " prompt_db_url
-  if [[ -n "$prompt_db_url" ]]; then
+  if [[ -n "$prompt_db_url" ]]; thenct
     LOCALAI_AGENT_POOL_VECTOR_ENGINE="postgres"
     LOCALAI_AGENT_POOL_DATABASE_URL="$prompt_db_url"
   fi
@@ -123,14 +138,108 @@ cat <<EOF >/opt/localai/.env
 # LocalAI Environment Configuration
 DEBUG=${LOCALAI_DEBUG}
 
+## Set number of threads.
+## Note: prefer the number of physical cores. Overbooking the CPU degrades performance notably.
+# LOCALAI_THREADS=14
+
+## Specify a different bind address (defaults to ":8080")
+LOCALAI_ADDRESS=0.0.0.0:8080
+
+## Default models context size
+# LOCALAI_CONTEXT_SIZE=512
+
+## Define galleries.
+## models will to install will be visible in `/models/available`
+# LOCALAI_GALLERIES=[{"name":"localai", "url":"github:mudler/LocalAI/gallery/index.yaml@master"}]
+
+## CORS settings
+# LOCALAI_CORS=true
+# LOCALAI_CORS_ALLOW_ORIGINS=*
+
+## Default path for models
+LOCALAI_MODELS_PATH=/opt/localai/models/
+
+## Enable debug mode
+DEBUG=true
+# LOCALAI_LOG_LEVEL=debug
+
+## Disables COMPEL (Diffusers)
+# COMPEL=0
+
+## Disables SD_EMBED (Diffusers)
+# SD_EMBED=0
+
+## Enable/Disable single backend (useful if only one GPU is available)
+# LOCALAI_SINGLE_ACTIVE_BACKEND=true
+
+# Forces shutdown of the backends if busy (only if LOCALAI_SINGLE_ACTIVE_BACKEND is set)
+# LOCALAI_FORCE_BACKEND_SHUTDOWN=true
+
+## Path where to store generated images
+# LOCALAI_IMAGE_PATH=/tmp/generated/images
+
+## Specify a default upload limit in MB (whisper)
+# LOCALAI_UPLOAD_LIMIT=15
+
+## List of external GRPC backends (note on the container image this variable is already set to use extra backends available in extra/)
+# LOCALAI_EXTERNAL_GRPC_BACKENDS=my-backend:127.0.0.1:9000,my-backend2:/usr/bin/backend.py
+
+### Advanced settings ###
+### Those are not really used by LocalAI, but from components in the stack ###
+### Preload libraries
+# LD_PRELOAD=
+
+### Huggingface cache for models
+# HUGGINGFACE_HUB_CACHE=/usr/local/huggingface
+
+### Python backends GRPC max workers
+### Default number of workers for GRPC Python backends.
+### This actually controls wether a backend can process multiple requests or not.
+# PYTHON_GRPC_MAX_WORKERS=1
+
+### Define the number of parallel LLAMA.cpp workers (Defaults to 1)
+# LLAMACPP_PARALLEL=1
+
+### Define a list of GRPC Servers for llama-cpp workers to distribute the load
+# https://github.com/ggerganov/llama.cpp/pull/6829
+# https://github.com/ggerganov/llama.cpp/blob/master/tools/rpc/README.md
+# LLAMACPP_GRPC_SERVERS=""
+
+### Enable to run parallel requests
+# LOCALAI_PARALLEL_REQUESTS=true
+
+# Enable to allow p2p mode
+# LOCALAI_P2P=true
+
+# Enable to use federated mode
+# LOCALAI_FEDERATED=true
+
+# Enable to start federation server
+# FEDERATED_SERVER=true
+
+# Define to use federation token
+# TOKEN=""
+
+### Watchdog settings
+###
+# Enables watchdog to kill backends that are inactive for too much time
+# LOCALAI_WATCHDOG_IDLE=true
+#
+# Time in duration format (e.g. 1h30m) after which a backend is considered idle
+# LOCALAI_WATCHDOG_IDLE_TIMEOUT=5m
+#
+# Enables watchdog to kill backends that are busy for too much time
+# LOCALAI_WATCHDOG_BUSY=true
+#
+# Time in duration format (e.g. 1h30m) after which a backend is considered busy
+# LOCALAI_WATCHDOG_BUSY_TIMEOUT=5m
+
 # Agents (LocalAGI) - https://localai.io/features/agents/
 LOCALAI_DISABLE_AGENTS=${LOCALAI_DISABLE_AGENTS}
 LOCALAI_AGENT_POOL_DEFAULT_MODEL=hermes-3-llama3.1-8b
 LOCALAI_AGENT_POOL_ENABLE_SKILLS=${LOCALAI_AGENT_POOL_ENABLE_SKILLS}
 LOCALAI_AGENT_POOL_ENABLE_LOGS=true
 LOCALAI_AGENT_HUB_URL=https://agenthub.localai.io
-LOCALAI_FORCE_META_BACKEND_CAPABILITY=true
-LLAMA_VULKAN=1
 EOF
 
 if [[ -n "${LOCALAI_AGENT_POOL_VECTOR_ENGINE}" ]]; then
@@ -155,18 +264,13 @@ Type=simple
 User=root
 WorkingDirectory=/opt/localai
 EnvironmentFile=-/opt/localai/.env
-ExecStart=/opt/localai/local-ai run --models-path=/opt/localai/models/ --address=0.0.0.0:8080
+ExecStart=/opt/localai/local-ai run
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# Workaround: intel_gpu_top hangs LocalAI startup hook on Proxmox LXC containers
-if [ -f "/usr/bin/intel_gpu_top" ]; then
-  mv /usr/bin/intel_gpu_top /usr/bin/intel_gpu_top.bak
-fi
 
 systemctl enable -q --now localai
 msg_ok "Created Service"

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVED/main/misc/build.func)
-# Copyright (c) 2021-2026 community-scripts ORG
-# Author: localai-contributor
+# Copyright (c) 2021-2026
+# Author: jessicamrbr
 # License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
 # Source: https://localai.io/
 
 APP="LocalAI"
-var_tags="ai;llm"
-var_cpu="4"
-var_ram="8192"
-var_disk="30"
-var_os="debian"
-var_version="12"
+var_tags="${var_tags:-ai}"
+var_cpu="${var_cpu:-12}"
+var_ram="${var_ram:-8192}"
+var_disk="${var_disk:-60}"
+var_os="${var_os:-ubuntu}"
+var_version="${var_version:-24.04}"
 var_unprivileged="1"
 var_gpu="${var_gpu:-yes}"
 
@@ -60,6 +60,7 @@ function update_script() {
 start
 build_container
 description
+
 msg_ok "Completed Successfully!\n"
 echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
 echo -e "${INFO}${YW} Access it using the following URL:${CL}"
