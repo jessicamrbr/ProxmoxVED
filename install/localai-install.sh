@@ -29,21 +29,33 @@ $STD apt install -y \
   libopenblas-dev \
   libclblast-dev \
   pkg-config \
-  zstd
+  zstd \
+  gnupg \
+  git \
+  libarchive13 \
+  net-tools \
+  file \
+  openssh-server \
+  openssh-client
 msg_ok "Installed Base Dependencies"
 
 msg_info "Setting up Intel Repositories"
+# Preparar diretório de chaves
 mkdir -p /usr/share/keyrings
-curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg 2>/dev/null || true
+
+# Chave e Fonte: Intel GPU
+wget -qO - https://repositories.intel.com/gpu/intel-graphics.key | gpg --yes --dearmor -o /usr/share/keyrings/intel-graphics.gpg
 cat <<EOF >/etc/apt/sources.list.d/intel-gpu.sources
 Types: deb
 URIs: https://repositories.intel.com/gpu/ubuntu
-Suites: jammy
-Components: client
-Architectures: amd64 i386
+Suites: noble/lts/2350
+Components: unified
+Architectures: amd64
 Signed-By: /usr/share/keyrings/intel-graphics.gpg
 EOF
-curl -fsSL https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor -o /usr/share/keyrings/oneapi-archive-keyring.gpg 2>/dev/null || true
+
+# Chave e Fonte: Intel OneAPI
+curl -fsSL https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --yes --dearmor -o /usr/share/keyrings/oneapi-archive-keyring.gpg
 cat <<EOF >/etc/apt/sources.list.d/oneAPI.sources
 Types: deb
 URIs: https://apt.repos.intel.com/oneapi
@@ -51,54 +63,66 @@ Suites: all
 Components: main
 Signed-By: /usr/share/keyrings/oneapi-archive-keyring.gpg
 EOF
-$STD apt update
+
+# Adicionar PPA Kobuk (Essencial para LXC Intel GPU)
+$STD add-apt-repository -y ppa:kobuk-team/intel-graphics
+$STD apt-get update
 msg_ok "Setting up Intel Repositories"
 
 msg_info "Installing Intel GPU SDK"
-# Debian 13+ has newer Level Zero packages in system repos that conflict with Intel repo packages
-if is_debian && [[ "$(get_os_version_major)" -ge 13 ]]; then
-  # Use system packages on Debian 13+ (avoid conflicts with libze1)
-  $STD apt -y install libze1 libze-dev intel-level-zero-gpu 2>/dev/null || {
-    msg_warn "Failed to install some Level Zero packages, continuing anyway"
-  }
-else
-  # Use Intel repository packages for older systems
-  $STD apt -y install intel-level-zero-gpu level-zero level-zero-dev 2>/dev/null || {
-    msg_warn "Failed to install Intel Level Zero packages, continuing anyway"
-  }
-fi
+$STD apt-get install -y --no-install-recommends \
+  intel-oneapi-runtime-libs \
+  intel-opencl-icd \
+  clinfo \
+  intel-level-zero-gpu \
+  libze1 \
+  libze-dev \
+  intel-metrics-discovery \
+  intel-gsc \
+  intel-ocloc \
+  intel-basekit
+
+cat << 'EOF' > /etc/profile.d/oneapi.sh
+export ONEAPI_ROOT=/opt/intel/oneapi
+export SETVARS_COMPLETED=1
+export VTUNE_PROFILER_DIR=$ONEAPI_ROOT/vtune/2025.10
+export TBBROOT=$ONEAPI_ROOT/tbb/2022.3/env/..
+export MKLROOT=$ONEAPI_ROOT/mkl/2025.3
+export I_MPI_ROOT=$ONEAPI_ROOT/mpi/2021.17
+export PATH=$ONEAPI_ROOT/vtune/2025.10/bin64:$ONEAPI_ROOT/mpi/2021.17/bin:$ONEAPI_ROOT/mkl/2025.3/bin:$ONEAPI_ROOT/compiler/2025.3/bin:$PATH
+export LD_LIBRARY_PATH=$ONEAPI_ROOT/tcm/1.4/lib:$ONEAPI_ROOT/umf/1.0/lib:$ONEAPI_ROOT/tbb/2022.3/env/../lib/intel64/gcc4.8:$ONEAPI_ROOT/mpi/2021.17/lib:$ONEAPI_ROOT/mkl/2025.3/lib:$ONEAPI_ROOT/compiler/2025.3/lib:$LD_LIBRARY_PATH
+export PKG_CONFIG_PATH=$ONEAPI_ROOT/vtune/2025.10/include/pkgconfig/lib64:$ONEAPI_ROOT/mkl/2025.3/lib/pkgconfig:$PKG_CONFIG_PATH
+EOF
+chmod +x /etc/profile.d/oneapi.sh
+
 msg_ok "Installed Intel GPU SDK"
 
-msg_info "Installing Intel Toolkit (oneAPI)"
-$STD apt install -y --no-install-recommends intel-basekit-2024.1
-msg_ok "Installed Intel Toolkit (oneAPI)"
+# msg_info "Setting up NVIDIA Repository (CUDA)"
+# curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
+# $STD dpkg -i cuda-keyring_1.1-1_all.deb
+# rm -f cuda-keyring_1.1-1_all.deb
+# $STD apt update
+# msg_ok "Setting up NVIDIA Repository (CUDA)"
 
-msg_info "Setting up NVIDIA Repository (CUDA)"
-curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
-$STD dpkg -i cuda-keyring_1.1-1_all.deb
-rm -f cuda-keyring_1.1-1_all.deb
-$STD apt update
-msg_ok "Setting up NVIDIA Repository (CUDA)"
+# msg_info "Installing Vulkan GPU SDK"
+# $STD apt install -y mesa-vulkan-drivers vulkan-tools libvulkan-dev
+# msg_ok "Installed Vulkan GPU SDK"
 
-msg_info "Installing Vulkan GPU SDK"
-$STD apt install -y mesa-vulkan-drivers vulkan-tools libvulkan-dev
-msg_ok "Installed Vulkan GPU SDK"
+# msg_info "Installing NVIDIA Toolkit (CUDA)"
+# $STD apt install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 libcusparse-dev-12-8
+# msg_ok "Installed NVIDIA Toolkit (CUDA)"
 
-msg_info "Installing NVIDIA Toolkit (CUDA)"
-$STD apt install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 libcusparse-dev-12-8
-msg_ok "Installed NVIDIA Toolkit (CUDA)"
+# msg_info "Setting up AMD Repositories"
+# wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
+# cat <<EOF >/etc/apt/sources.list.d/rocm.list
+# deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/debian jammy main
+# EOF
+# $STD apt update
+# msg_ok "Setting up AMD Repositories"
 
-msg_info "Setting up AMD Repositories"
-wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
-cat <<EOF >/etc/apt/sources.list.d/rocm.list
-deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/debian jammy main
-EOF
-$STD apt update
-msg_ok "Setting up AMD Repositories"
-
-msg_info "Setting up AMD GPU SDK & Toolkits (ROCm & HipBLAS)"
-$STD apt install -y --no-install-recommends hipblas-dev hipblaslt-dev rocblas-dev || true
-msg_ok "Setting up AMD GPU SDK & Toolkits (ROCm & HipBLAS)"
+# msg_info "Setting up AMD GPU SDK & Toolkits (ROCm & HipBLAS)"
+# $STD apt install -y --no-install-recommends hipblas-dev hipblaslt-dev rocblas-dev || true
+# msg_ok "Setting up AMD GPU SDK & Toolkits (ROCm & HipBLAS)"
 
 GO_VERSION="1.22.12" setup_go
 
@@ -117,6 +141,22 @@ cd /opt/localai
 $STD make build
 msg_ok "Built Application"
 
+# msg_info "Setting up GPU Backends and Workarounds"
+# # Prevent deadlock caused by intel_gpu_top on LXC during LocalAI hw polling
+# if [ -f "/usr/bin/intel_gpu_top" ]; then
+#   $STD mv /usr/bin/intel_gpu_top /usr/bin/intel_gpu_top.bak
+# fi
+# # Fetch Intel SYCL backend to enable iGPU offloading
+# export LC_ALL=C
+# $STD /opt/localai/local-ai backends install oci://quay.io/go-skynet/local-ai-backends:latest-gpu-intel-sycl-f16-llama-cpp intel-sycl-f16-llama-cpp || true
+# msg_ok "Configured GPU Backends"
+
+
+# # Fetch Intel SYCL backend to enable iGPU offloading
+# export LC_ALL=C
+# $STD /opt/localai/local-ai backends install oci://quay.io/go-skynet/local-ai-backends:latest-gpu-intel-sycl-f16-llama-cpp intel-sycl-f16-llama-cpp || true
+# msg_ok "Configured GPU Backends"
+
 setup_hwaccel
 
 read -r -p "Enable LocalAGI (Agents) features? <y/N> " prompt_agi
@@ -124,7 +164,7 @@ if [[ ${prompt_agi,,} =~ ^(y|yes)$ ]]; then
   LOCALAI_DISABLE_AGENTS="false"
   LOCALAI_AGENT_POOL_ENABLE_SKILLS="true"
   read -r -p "Enter PostgreSQL Database URL for LocalAGI (Press enter to skip): " prompt_db_url
-  if [[ -n "$prompt_db_url" ]]; thenct
+  if [[ -n "$prompt_db_url" ]]; then
     LOCALAI_AGENT_POOL_VECTOR_ENGINE="postgres"
     LOCALAI_AGENT_POOL_DATABASE_URL="$prompt_db_url"
   fi
@@ -135,9 +175,7 @@ fi
 
 msg_info "Generating Environment Variables"
 cat <<EOF >/opt/localai/.env
-# LocalAI Environment Configuration
-DEBUG=${LOCALAI_DEBUG}
-
+## LocalAI Environment Configuration
 ## Set number of threads.
 ## Note: prefer the number of physical cores. Overbooking the CPU degrades performance notably.
 # LOCALAI_THREADS=14
@@ -146,7 +184,12 @@ DEBUG=${LOCALAI_DEBUG}
 LOCALAI_ADDRESS=0.0.0.0:8080
 
 ## Default models context size
-# LOCALAI_CONTEXT_SIZE=512
+# LOCALAI_CONTEXT_SIZ
+# # Fetch Intel SYCL backend to enable iGPU offloading
+# export LC_ALL=C
+# $STD /opt/localai/local-ai backends install oci://quay.io/go-skynet/local-ai-backends:latest-gpu-intel-sycl-f16-llama-cpp intel-sycl-f16-llama-cpp || true
+# msg_ok "Configured GPU Backends"
+E=512
 
 ## Define galleries.
 ## models will to install will be visible in `/models/available`
@@ -184,28 +227,30 @@ DEBUG=true
 ## List of external GRPC backends (note on the container image this variable is already set to use extra backends available in extra/)
 # LOCALAI_EXTERNAL_GRPC_BACKENDS=my-backend:127.0.0.1:9000,my-backend2:/usr/bin/backend.py
 
-### Advanced settings ###
-### Those are not really used by LocalAI, but from components in the stack ###
-### Preload libraries
+## Advanced settings
+## Those are not really used by LocalAI, but from components in the stack
+## Preload libraries
 # LD_PRELOAD=
 
-### Huggingface cache for models
+## Huggingface cache for models
 # HUGGINGFACE_HUB_CACHE=/usr/local/huggingface
 
-### Python backends GRPC max workers
-### Default number of workers for GRPC Python backends.
-### This actually controls wether a backend can process multiple requests or not.
+## Python backends GRPC max workers
+## Default number of workers for GRPC Python backends.
+## This actually controls wether a backend can process multiple requests or not.
 # PYTHON_GRPC_MAX_WORKERS=1
 
-### Define the number of parallel LLAMA.cpp workers (Defaults to 1)
+## Define the number of parallel LLAMA.cpp workers (Defaults to 1)
 # LLAMACPP_PARALLEL=1
 
-### Define a list of GRPC Servers for llama-cpp workers to distribute the load
+## Define a list of GRPC Servers for llama-cpp workers to distribute the load
 # https://github.com/ggerganov/llama.cpp/pull/6829
 # https://github.com/ggerganov/llama.cpp/blob/master/tools/rpc/README.md
-# LLAMACPP_GRPC_SERVERS=""
+# LLAMACPP_GRPC_SERVERS=""qwen3.5-9b-glm5.1-distill-v1
 
-### Enable to run parallel requests
+Error: failed to load model with internal loader: could not load model: rpc e
+
+## Enable to run parallel requests
 # LOCALAI_PARALLEL_REQUESTS=true
 
 # Enable to allow p2p mode
@@ -220,8 +265,8 @@ DEBUG=true
 # Define to use federation token
 # TOKEN=""
 
-### Watchdog settings
-###
+## Watchdog settings
+##DEBUG=${LOCALAI_DEBUG}
 # Enables watchdog to kill backends that are inactive for too much time
 # LOCALAI_WATCHDOG_IDLE=true
 #
@@ -240,6 +285,11 @@ LOCALAI_AGENT_POOL_DEFAULT_MODEL=hermes-3-llama3.1-8b
 LOCALAI_AGENT_POOL_ENABLE_SKILLS=${LOCALAI_AGENT_POOL_ENABLE_SKILLS}
 LOCALAI_AGENT_POOL_ENABLE_LOGS=true
 LOCALAI_AGENT_HUB_URL=https://agenthub.localai.io
+
+## Custom GPU bypass and Backend Configuration
+LOCALAI_FORCE_META_BACKEND_CAPABILITY=true
+LOCALAI_BACKENDS_PATH=/backends
+LLAMA_VULKAN=1
 EOF
 
 if [[ -n "${LOCALAI_AGENT_POOL_VECTOR_ENGINE}" ]]; then
